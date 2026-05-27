@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MLP 反向传播 — DL Visualizer</title>
+
+  <!-- No external chart library — loss curve drawn with native Canvas -->
+  <link  rel="stylesheet" href="vendor/katex.min.css">
+  <script src="vendor/katex.min.js" defer></script>
+
+  <!-- Shared styles -->
+  <link rel="stylesheet" href="shared/layout.css">
+
+  <style>
+    /* ── Canvas: JS sets width/height attributes AND style.width/height once at init ── */
+    #network-canvas {
+      display: block;
+      border-radius: 8px;
+      flex-shrink: 0;
+    }
+
+    /* ── Pseudocode scroll ── */
+    #pseudo-box {
+      max-height: 240px;
+      overflow-y: auto;
+    }
+
+    /* ── Phase badge ── */
+    #phase-badge {
+      display: inline-block;
+      font-size: 0.7rem;
+      padding: 2px 8px;
+      border-radius: 12px;
+      margin-left: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      vertical-align: middle;
+    }
+    .badge-init     { background: #1e2130; color: #64748b; border: 1px solid #3d4266; }
+    .badge-forward  { background: #14532d; color: #34d399; border: 1px solid #166534; }
+    .badge-loss     { background: #4c1d95; color: #c4b5fd; border: 1px solid #5b21b6; }
+    .badge-backward { background: #7f1d1d; color: #f87171; border: 1px solid #991b1b; }
+    .badge-update   { background: #1e3a5f; color: #60a5fa; border: 1px solid #1d4ed8; }
+    .badge-converge { background: #14532d; color: #34d399; border: 1px solid #166534; }
+
+    /* ── Legend ── */
+    #legend {
+      display: flex;
+      gap: 14px;
+      font-size: 0.72rem;
+      color: #64748b;
+      padding: 6px 4px 0;
+    }
+    .legend-item { display: flex; align-items: center; gap: 4px; }
+    .legend-dot  { width: 10px; height: 10px; border-radius: 50%; }
+  </style>
+</head>
+
+<body>
+
+<!-- ── Header ── -->
+<div id="header">
+  <h1>MLP 反向传播 (Backpropagation)
+    <span id="phase-badge" class="badge-init">初始化</span>
+  </h1>
+  <span id="step-counter">Step 0 / 0</span>
+</div>
+
+<!-- ── Main ── -->
+<div id="main">
+
+  <!-- Left: network canvas -->
+  <div id="viz-panel" style="flex-direction:column">
+    <canvas id="network-canvas"></canvas>
+    <div id="legend">
+      <div class="legend-item"><div class="legend-dot" style="background:#34d399"></div> 前向传播</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#f87171"></div> 梯度/正梯度</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#60a5fa"></div> 负梯度</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#a78bfa"></div> 权重</div>
+    </div>
+  </div>
+
+  <!-- Right: info sidebar -->
+  <div id="info-panel">
+
+    <!-- Step caption -->
+    <div id="caption-box">
+      <span id="caption-text">点击 ▶ Next 或按键盘右箭头开始逐步演示。</span>
+    </div>
+
+    <!-- Pseudocode -->
+    <div id="pseudo-box">
+      <div id="pseudo-lines"></div>
+    </div>
+
+    <!-- Parameters -->
+    <div id="param-box">
+      <h3>参数面板</h3>
+      <div class="param-grid" id="param-values">
+        <div class="param-item"><div class="param-label">Loss</div><div class="param-value">—</div></div>
+      </div>
+    </div>
+
+    <!-- Loss chart -->
+    <div id="loss-chart-wrap">
+      <h3>损失曲线 (BCE Loss)</h3>
+      <canvas id="loss-chart"></canvas>
+    </div>
+
+    <!-- Notation reference -->
+    <div id="param-box" style="margin-top:4px">
+      <h3>符号说明</h3>
+      <div style="font-size:0.74rem; color:#64748b; line-height:1.9; padding:4px 0">
+        <div><span style="color:#a78bfa">W₁, b₁</span> — 输入层→隐藏层权重与偏置</div>
+        <div><span style="color:#a78bfa">W₂, b₂</span> — 隐藏层→输出层权重与偏置</div>
+        <div><span style="color:#34d399">z</span> — 线性变换结果（激活前）</div>
+        <div><span style="color:#34d399">a</span> — 激活值（ReLU 或 σ 之后）</div>
+        <div><span style="color:#f87171">∂L/∂W</span> — 损失对权重的偏导（梯度）</div>
+        <div><span style="color:#f59e0b">BCE</span> — Binary Cross-Entropy 二元交叉熵</div>
+        <div><span style="color:#f59e0b">σ</span> — Sigmoid 函数 1/(1+e<sup>−z</sup>)</div>
+        <div><span style="color:#60a5fa">lr</span> — 学习率（Learning Rate）= 0.5</div>
+      </div>
+    </div>
+
+  </div><!-- /info-panel -->
+</div><!-- /main -->
+
+<!-- ── Controls ── -->
+<div id="controls">
+  <button class="btn" id="btn-reset">⏮ Reset</button>
+  <button class="btn" id="btn-prev">← Prev</button>
+  <button class="btn primary" id="btn-next">▶ Next</button>
+  <button class="btn" id="btn-play">⏩ Auto Play</button>
+  <div id="speed-wrap">
+    <label for="speed-select">速度</label>
+    <select id="speed-select">
+      <option value="1800">慢</option>
+      <option value="1200" selected>中</option>
+      <option value="700">快</option>
+      <option value="350">极快</option>
+    </select>
+  </div>
+</div>
+
+<!-- ── Scripts ── -->
+<script src="data/sample_data.js"></script>
+<script src="shared/controls.js"></script>
+<script src="js/algorithm.js"></script>
+<script src="js/visualization.js"></script>
+<script src="js/main.js"></script>
+
+<!-- Phase badge updater -->
+<script>
+  const PHASE_LABELS = {
+    init:     ['初始化',  'badge-init'],
+    forward:  ['前向传播','badge-forward'],
+    loss:     ['计算损失','badge-loss'],
+    backward: ['反向传播','badge-backward'],
+    update:   ['权重更新','badge-update'],
+    converge: ['验证收敛','badge-converge'],
+  };
+
+  const _origRender = Viz.render.bind(Viz);
+  Viz.render = function(step, idx, total) {
+    _origRender(step, idx, total);
+    const badge = document.getElementById('phase-badge');
+    if (badge && step.phase) {
+      const [label, cls] = PHASE_LABELS[step.phase] || ['?','badge-init'];
+      badge.textContent = label;
+      badge.className = `badge ${cls}`;
+    }
+  };
+</script>
+
+</body>
+</html>
